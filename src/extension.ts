@@ -3,7 +3,7 @@ import OpenSCAD from "openscad-wasm";
 import { stl2glb } from './stl2glb';
 import { patchInitWasm } from './patchinitwasm';
 
-let instance: Promise<OpenSCAD.Instance> = patchInitWasm(() => OpenSCAD({ noInitialRun: true }));
+import * as path from 'path';
 
 let counter = 0;
 
@@ -13,6 +13,38 @@ interface OpenFile {
 }
 
 const panels = new Map<vscode.TextEditor, OpenFile>();
+
+async function updatePreview(editor: vscode.TextEditor, entry: OpenFile) {
+	try {
+		const scad = await patchInitWasm(() => OpenSCAD({ noInitialRun: true }));
+		const document = editor.document;
+
+		const inFile = `${entry.index}.scad`;
+		const outFile = `${entry.index}.stl`;
+
+		scad.FS.writeFile(inFile, document.getText());
+		try {
+			scad.callMain([inFile, "--enable=manifold", "--export-format=binstl", "-o", outFile]);
+		} catch (e: any) {
+			if (typeof e === "number" && scad.formatException) {
+				e = scad.formatException(e);
+			}
+
+			throw new Error(e);
+		}
+		const output = scad.FS.readFile(`/${outFile}`);
+
+		const glb = await stl2glb(output);
+		const model = Buffer.from(glb).toString('base64');
+
+		entry.panel.webview.postMessage({
+			src: model,
+		});
+	} catch (e) {
+		console.log(e);
+		debugger;
+	}
+}
 
 export function activate(context: vscode.ExtensionContext) {
 	console.log('Embedded OpenSCAD Extension Activated');
@@ -38,7 +70,7 @@ export function activate(context: vscode.ExtensionContext) {
 			if (!panels.has(editor)) {
 				const panel = vscode.window.createWebviewPanel(
 					`openscadPreview-${counter++}`,
-					"OpenSCAD Preview (...)",
+					`Preview ${path.basename(editor.document.fileName)}`,
 					vscode.ViewColumn.Beside,
 					{
 						enableScripts: true,
@@ -46,40 +78,41 @@ export function activate(context: vscode.ExtensionContext) {
 					}
 				);
 
+				panel.onDidDispose(() => {
+					panels.delete(editor);
+				});
+
 				panels.set(editor, { index: counter, panel });
 				panel.webview.html = await setWebviewLinks(HTML, panel);
 			}
 
 			const entry = panels.get(editor)!;
-
-			try {
-				const scad = await instance;
-
-				const document = editor.document;
-
-				const inFile = `${entry.index}.scad`;
-				const outFile = `${entry.index}.stl`;
-
-				scad.FS.writeFile(inFile, document.getText());
-				scad.callMain([inFile, "--enable=manifold", "--export-format=binstl", "-o", outFile]);
-				const output = scad.FS.readFile(`/${outFile}`);
-
-				const glb = await stl2glb(output);
-				const model = Buffer.from(glb).toString('base64');
-
-				entry.panel.webview.postMessage({
-					src: model,
-				});
-			} catch (e) {
-				console.log(e);
-				debugger;
-			}
+			await updatePreview(editor, entry);
 		} else {
 			vscode.window.showInformationMessage('No active editor!');
 		}
 	});
 
-	context.subscriptions.push(disposable);
+	// Add file watcher
+	const fileWatcher = vscode.workspace.onDidSaveTextDocument(document => {
+		for (const [editor, entry] of panels.entries()) {
+			if (editor.document === document) {
+				updatePreview(editor, entry);
+				break;
+			}
+		}
+	});
+
+	// Add editor close handler
+	const editorCloseListener = vscode.window.onDidChangeVisibleTextEditors(editors => {
+		for (const [editor] of panels) {
+			if (!editors.includes(editor)) {
+				panels.delete(editor);
+			}
+		}
+	});
+
+	context.subscriptions.push(disposable, fileWatcher, editorCloseListener);
 }
 
 export function deactivate() { }
