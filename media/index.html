@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script type="importmap">
+        {
+          "imports": {
+            "three": "@media{three.module.min.js}"
+          }
+        }
+    </script>
+    <script type="module" src="@media{model-viewer-module.min.js}"></script>
+
+    <style>
+        body {
+            background-color: #ffffe5;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        model-viewer {
+            width: 100%;
+            height: 100vh;
+        }
+    </style>
+    <title>OpenSCAD Preview</title>
+</head>
+
+<body>
+    <model-viewer camera-controls environment-image="legacy" camera-target="0m 0m 0m"></model-viewer>
+    <script type="module">
+        import * as THREE from 'three';
+
+        const viewer = document.querySelector('model-viewer');
+
+        viewer.addEventListener('load', async () => {
+            debugger;
+            const scene = viewer[Object.getOwnPropertySymbols(viewer).find(e => e.description === 'scene')];
+            const axesHelper = new THREE.AxesHelper(100);
+            scene.add(axesHelper);
+
+            const model = viewer.model;
+            const materials = model.materials;
+
+            materials.forEach(material => {
+                material.pbrMetallicRoughness.setBaseColorFactor([250 / 255, 216 / 255, 44 / 255, 1]);
+                material.pbrMetallicRoughness.setMetallicFactor(0.2);
+                material.pbrMetallicRoughness.setRoughnessFactor(1.2);
+            });
+        });
+
+        window.addEventListener('message', event => {
+            viewer.src = `data:model/gltf+json;base64,${event.data.src}`;
+        });
+    </script>
+</body>
+
+</html>
