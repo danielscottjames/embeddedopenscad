@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
 import OpenSCAD from "openscad-wasm";
 import { stl2glb } from './stl2glb';
+import { patchInitWasm } from './patchinitwasm';
 
-let instance: Promise<OpenSCAD.Instance> = OpenSCAD({ noInitialRun: true });
+let instance: Promise<OpenSCAD.Instance> = patchInitWasm(() => OpenSCAD({ noInitialRun: true }));
 
 let counter = 0;
 
@@ -20,9 +21,9 @@ export function activate(context: vscode.ExtensionContext) {
 		let text = await content;
 		text = text.replace(/@media\{([^}]+)\}/g, (match, fileName) => {
 			return panel.webview.asWebviewUri(
-			  vscode.Uri.joinPath(context.extensionUri, 'media', fileName)
+				vscode.Uri.joinPath(context.extensionUri, 'media', fileName)
 			).toString();
-		  });
+		});
 		return text;
 	}
 
