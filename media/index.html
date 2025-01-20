@@ -26,15 +26,18 @@
             height: 100vh;
         }
     </style>
+    <link rel="stylesheet" href="@media{loading-bar.css}">
     <title>OpenSCAD Preview</title>
 </head>
 
 <body>
+    <div class="loading-bar"></div>
     <model-viewer camera-controls environment-image="legacy" camera-target="0m 0m 0m"></model-viewer>
     <script type="module">
         import * as THREE from 'three';
 
         const viewer = document.querySelector('model-viewer');
+        const loadingBar = document.querySelector('.loading-bar');
 
         viewer.addEventListener('load', async () => {
             debugger;
@@ -53,7 +56,14 @@
         });
 
         window.addEventListener('message', event => {
-            viewer.src = `data:model/gltf+json;base64,${event.data.src}`;
+            if (event.data.loading !== undefined) {
+                loadingBar.classList.toggle('active', event.data.loading);
+                return;
+            }
+
+            if (event.data.src) {
+                viewer.src = `data:model/gltf+json;base64,${event.data.src}`;
+            }
         });
     </script>
 </body>

@@ -15,6 +15,8 @@ interface OpenFile {
 const panels = new Map<vscode.TextEditor, OpenFile>();
 
 async function updatePreview(editor: vscode.TextEditor, entry: OpenFile) {
+	entry.panel.webview.postMessage({ loading: true });
+
 	try {
 		const scad = await patchInitWasm(() => OpenSCAD({ noInitialRun: true }));
 		const document = editor.document;
@@ -43,6 +45,8 @@ async function updatePreview(editor: vscode.TextEditor, entry: OpenFile) {
 	} catch (e) {
 		console.log(e);
 		debugger;
+	} finally {
+		entry.panel.webview.postMessage({ loading: false });
 	}
 }
 
