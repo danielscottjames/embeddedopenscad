@@ -19,6 +19,11 @@
         "command": "embeddedopenscad.previewSCAD",
         "title": "Preview SCAD model to the Side",
         "icon": "$(open-preview)"
+      },
+      {
+        "command": "embeddedopenscad.exportSCAD",
+        "title": "Export SCAD to STL",
+        "icon": "$(export)"
       }
     ],
     "menus": {
@@ -26,6 +31,11 @@
         {
           "when": "resourceExtname == .scad",
           "command": "embeddedopenscad.previewSCAD",
+          "group": "navigation"
+        },
+        {
+          "when": "resourceExtname == .scad",
+          "command": "embeddedopenscad.exportSCAD",
           "group": "navigation"
         }
       ]

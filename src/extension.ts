@@ -14,28 +14,35 @@ interface OpenFile {
 
 const panels = new Map<vscode.TextEditor, OpenFile>();
 
+async function renderSCAD(document: vscode.TextDocument, preview: boolean = false) {
+	const scad = await patchInitWasm(() => OpenSCAD({ noInitialRun: true }));
+	const inFile = 'input.scad';
+	const outFile = 'output.stl';
+
+	let text = document.getText();
+	if (preview) {
+		// Setting this with a command line arg doesn't appear to work
+		text = `$preview=true;${text}`;
+	}
+
+	scad.FS.writeFile(inFile, text);
+	try {
+		const args = [inFile, "--enable=manifold", "--export-format=binstl", "-o", outFile];
+		scad.callMain(args);
+	} catch (e: any) {
+		if (typeof e === "number" && scad.formatException) {
+			e = scad.formatException(e);
+		}
+		throw new Error(e);
+	}
+	return scad.FS.readFile(`/${outFile}`);
+}
+
 async function updatePreview(editor: vscode.TextEditor, entry: OpenFile) {
 	entry.panel.webview.postMessage({ loading: true });
 
 	try {
-		const scad = await patchInitWasm(() => OpenSCAD({ noInitialRun: true }));
-		const document = editor.document;
-
-		const inFile = `${entry.index}.scad`;
-		const outFile = `${entry.index}.stl`;
-
-		scad.FS.writeFile(inFile, document.getText());
-		try {
-			scad.callMain([inFile, "--enable=manifold", "--export-format=binstl", "-o", outFile]);
-		} catch (e: any) {
-			if (typeof e === "number" && scad.formatException) {
-				e = scad.formatException(e);
-			}
-
-			throw new Error(e);
-		}
-		const output = scad.FS.readFile(`/${outFile}`);
-
+		const output = await renderSCAD(editor.document, true);
 		const glb = await stl2glb(output);
 		const model = Buffer.from(glb).toString('base64');
 
@@ -116,7 +123,27 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
-	context.subscriptions.push(disposable, fileWatcher, editorCloseListener);
+	const exportCommand = vscode.commands.registerCommand('embeddedopenscad.exportSCAD', async () => {
+		const editor = vscode.window.activeTextEditor;
+		if (!editor) {
+			vscode.window.showInformationMessage('No active editor!');
+			return;
+		}
+
+		try {
+			const currentFile = editor.document.uri;
+			const exportPath = currentFile.with({ path: currentFile.path.replace(/\.scad$/, '.stl') });
+
+			const output = await renderSCAD(editor.document);
+			await vscode.workspace.fs.writeFile(exportPath, output);
+
+			vscode.window.showInformationMessage('STL file exported successfully!');
+		} catch (e) {
+			vscode.window.showErrorMessage(`Export failed: ${e}`);
+		}
+	});
+
+	context.subscriptions.push(disposable, fileWatcher, editorCloseListener, exportCommand);
 }
 
 export function deactivate() { }
