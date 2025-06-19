@@ -28,8 +28,22 @@
         "command": "embeddedopenscad.exportSCAD",
         "title": "Export SCAD to STL",
         "icon": "$(export)"
+      },
+      {
+        "command": "embeddedopenscad.showOutput",
+        "title": "Show OpenSCAD Output Log"
       }
     ],
+    "configuration": {
+      "title": "Embedded OpenSCAD",
+      "properties": {
+        "embeddedopenscad.userLibraryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a directory containing OpenSCAD library folders (e.g., a directory that contains the BOSL2 folder). Each subdirectory will be loaded as a library."
+        }
+      }
+    },
     "menus": {
       "editor/title": [
         {
