@@ -49,7 +49,7 @@ export function activate(context: vscode.ExtensionContext) {
 		if (editor) {
 			if (!panels.has(editor)) {
 				const panel = vscode.window.createWebviewPanel(
-					`openscadPreview-${counter++}`,
+					`embeddedopenscad.preview.${counter++}`,
 					`Preview ${path.basename(editor.document.fileName)}`,
 					vscode.ViewColumn.Beside,
 					{
@@ -85,6 +85,7 @@ export function activate(context: vscode.ExtensionContext) {
 	const editorCloseListener = vscode.window.onDidChangeVisibleTextEditors(editors => {
 		for (const [editor] of panels) {
 			if (!editors.includes(editor)) {
+				panels.get(editor)?.panel.dispose();
 				panels.delete(editor);
 			}
 		}
@@ -101,6 +102,10 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
 	extensionContext = undefined;
+	panels.forEach((entry) => {
+		entry.panel.dispose();
+	});
+	panels.clear();
 }
 
 async function renderSCAD(document: vscode.TextDocument, preview: boolean = false) {
