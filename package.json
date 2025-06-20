@@ -40,7 +40,12 @@
         "embeddedopenscad.userLibraryPath": {
           "type": "string",
           "default": "",
-          "description": "Path to a directory containing OpenSCAD library folders (e.g., a directory that contains the BOSL2 folder). Each subdirectory will be loaded as a library."
+          "description": "Path to a directory containing OpenSCAD library folders."
+        },
+        "embeddedopenscad.enableManifold": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the 'manifold' engine in OpenSCAD. Recommended to disable only if you encounter issues."
         }
       }
     },

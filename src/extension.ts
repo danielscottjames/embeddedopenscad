@@ -121,7 +121,13 @@ async function renderSCAD(document: vscode.TextDocument, preview: boolean = fals
 	scad.FS.writeFile(inFile, text);
 
 	try {
-		const args = [inFile, "--enable=manifold", "--export-format=binstl", "-o", outFile];
+		const config = vscode.workspace.getConfiguration('embeddedopenscad');
+		const enableManifold = config.get<boolean>('enableManifold', true);
+		const args = [inFile];
+		if (enableManifold) {
+			args.push('--enable=manifold');
+		}
+		args.push('--export-format=binstl', '-o', outFile);
 
 		Logger.log(`OpenSCAD ${args.join(' ')}`);
 
