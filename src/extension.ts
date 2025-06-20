@@ -173,7 +173,16 @@ async function updatePreview(editor: vscode.TextEditor, entry: OpenFile) {
 		if (!(e instanceof ErrorFromOpenSCAD)) {
 			Logger.error(e);
 		}
-		// TODO: Notify the user somehow that re-rendering their changes failed.
+		// If error, send warning.stl as fallback
+		try {
+			const warningStlUri = vscode.Uri.joinPath(extensionContext!.extensionUri, 'media', 'warning.stl');
+			const warningStl = await vscode.workspace.fs.readFile(warningStlUri);
+			const glb = await stl2glb(new Uint8Array(warningStl));
+			const model = Buffer.from(glb).toString('base64');
+			entry.panel.webview.postMessage({ src: model });
+		} catch (fallbackError) {
+			Logger.error('Failed to load warning.stl fallback:', fallbackError);
+		}
 	} finally {
 		entry.panel.webview.postMessage({ loading: false });
 	}
