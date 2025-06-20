@@ -3,17 +3,32 @@ declare module 'openscad-wasm' {
 }
 
 declare namespace OpenSCAD {
-    class FS {
-        writeFile: (filename: string, contents: string | Uint8Array) => void;
-        readFile: (filename: string) => Uint8Array;
-        mkdir: (path: string) => void;
+    interface ErrnoError extends Error {
+        errno: number;
+    }
+
+    interface ErrnoErrorConstructor {
+        new(message?: string): ErrnoError;
+        (message?: string): ErrnoError;
+        readonly prototype: ErrnoError;
+    }
+
+    namespace FS {
+        function writeFile(filename: string, contents: string | Uint8Array): void;
+        function readFile(filename: string): Uint8Array;
+        function mkdir(path: string): void;
+        function stat(path: string): { isFile: boolean; isDirectory: boolean; size: number; mode: number };
+        function readdir(path: string): string[];
+
+        const ErrnoError: ErrnoErrorConstructor;
     }
 
     export class Instance {
-        FS: FS;
+        FS: typeof FS;
 
-        callMain: (args: string[]) => void;
+        callMain: (args: string[]) => number;
         formatException?: (pointer: number) => string;
+        getLastError?: () => Error | undefined;
 
         HEAPU8: Uint8Array;
         HEAPU32: Uint32Array;

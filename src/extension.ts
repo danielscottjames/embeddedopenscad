@@ -1,14 +1,17 @@
-import * as vscode from 'vscode';
 import { stl2glb } from './stl2glb';
-import { patchInitWasm } from './patchinitwasm';
+import { ErrorFromOpenSCAD, patchInitWasm } from './patchinitwasm';
+import { addFonts } from './wasm/openscad.fonts';
+import { unknownToString } from './util';
+import { decodeAndRethrowErrorFromOpenSCAD } from './error';
+import { loadLibraryFiles } from './loadLibraryFiles';
+import { Logger, setOutputChannel } from './logger';
 
 import OpenSCAD from "openscad-wasm";
-import { addFonts } from './wasm/openscad.fonts';
-
+import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 
-let counter = 0;
+const LIBRARIES_PATH = '/libraries';
 
 interface OpenFile {
 	index: number;
@@ -16,124 +19,19 @@ interface OpenFile {
 }
 
 const panels = new Map<vscode.TextEditor, OpenFile>();
+let counter = 0;
+let outputChannel!: vscode.OutputChannel;
 
-async function renderSCAD(document: vscode.TextDocument, preview: boolean = false) {
-	// Use our logging-enabled OpenSCAD instance
-	const scad = await createOpenSCADWithLogging();
-	const inFile = 'input.scad';
-	const outFile = 'output.stl';
-
-	// Log information about what we're about to do
-	outputChannel?.appendLine(`Processing OpenSCAD file: ${document.fileName}`);
-	outputChannel?.appendLine(`Preview mode: ${preview}`);
-
-	// Load user library files if configured
-	const config = vscode.workspace.getConfiguration('embeddedopenscad');
-	const userLibraryPath = config.get<string>('userLibraryPath', '');
-	const librariesPath = '/libraries';
-
-	if (userLibraryPath && userLibraryPath.trim() !== '') {
-		outputChannel?.appendLine(`User library path configured: ${userLibraryPath}`);
-		try {
-			// Check if the path exists before trying to load it
-			if (!fs.existsSync(userLibraryPath)) {
-				throw new Error(`User library path does not exist: ${userLibraryPath}`);
-			}
-
-			// Create the libraries directory and load user library files
-			await loadLibraryFiles(scad, userLibraryPath, librariesPath);
-			outputChannel?.appendLine(`Successfully loaded library files from ${userLibraryPath}`);
-
-			// Add libraries directory to include path via command-line arguments
-			// We'll set this in the args array instead
-		} catch (e) {
-			const errorMsg = decodeOpenSCADError(e, scad);
-			outputChannel?.appendLine(`Failed to load OpenSCAD library files: ${errorMsg}`);
-			vscode.window.showErrorMessage(`Failed to load OpenSCAD library files: ${errorMsg}`);
-		}
-	} else {
-		outputChannel?.appendLine('No user library path configured');
-	}
-
-	let text = document.getText();
-	if (preview) {
-		// Setting this with a command line arg doesn't appear to work
-		text = `$preview=true;${text}`;
-		outputChannel?.appendLine('Added $preview=true to the code');
-	}
-
-	outputChannel?.appendLine(`Writing input file: ${inFile}`);
-	scad.FS.writeFile(inFile, text);
-	try {
-		const args = [inFile, "--enable=manifold", "--export-format=binstl"];
-
-		// Add library include path if user library path is configured
-		// if (userLibraryPath && userLibraryPath.trim() !== '') {
-		// 	// Add standard OpenSCAD library paths
-		// 	args.push("-I", librariesPath);
-		// }
-
-		args.push("-o", outFile);
-
-		// Log the command we're about to run
-		const cmdStr = args.join(' ');
-		outputChannel?.appendLine(`Running OpenSCAD with args: ${cmdStr}`);
-
-		// Show the directory structure for debugging
-		outputChannel?.appendLine('Checking WASM filesystem structure before execution:');
-		listWasmDirectories(scad);
-
-		// Execute OpenSCAD
-		scad.callMain(args);
-		outputChannel?.appendLine('OpenSCAD processing completed successfully');
-	} catch (e: any) {
-		// Show output channel on error for debugging
-		outputChannel?.appendLine('ERROR: OpenSCAD processing failed');
-
-		// Get more detailed error information from our decoder
-		throw decodeOpenSCADError(e, scad);
-	}
-
-	outputChannel?.appendLine(`Reading output file: ${outFile}`);
-	return scad.FS.readFile(`/${outFile}`);
-}
-
-async function updatePreview(editor: vscode.TextEditor, entry: OpenFile) {
-	entry.panel.webview.postMessage({ loading: true });
-
-	try {
-		const output = await renderSCAD(editor.document, true);
-		const glb = await stl2glb(output);
-		const model = Buffer.from(glb).toString('base64');
-
-		entry.panel.webview.postMessage({
-			src: model,
-		});
-	} catch (e) {
-		// Display error message to user
-		const errorMessage = e instanceof Error ? e.message : String(e);
-		vscode.window.showErrorMessage(`OpenSCAD Error: ${errorMessage}`,
-			'Show Output Channel').then(selection => {
-				if (selection === 'Show Output Channel') {
-					vscode.commands.executeCommand('workbench.action.output.show');
-				}
-			});
-	} finally {
-		entry.panel.webview.postMessage({ loading: false });
-	}
-}
-
-let outputChannel: vscode.OutputChannel | undefined;
+let extensionContext: vscode.ExtensionContext | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
-	console.log('Embedded OpenSCAD Extension Activated');
-
-	// Create the output channel at activation time
-	outputChannel = outputChannel || vscode.window.createOutputChannel('OpenSCAD');
+	extensionContext = context;
+	outputChannel = vscode.window.createOutputChannel('OpenSCAD');
+	setOutputChannel(outputChannel);
 
 	async function setWebviewLinks(content: PromiseLike<string>, panel: vscode.WebviewPanel) {
 		let text = await content;
-		text = text.replace(/@media\{([^}]+)\}/g, (match, fileName) => {
+		text = text.replace(/@media\{([^}]+)\}/g, (_, fileName) => {
 			return panel.webview.asWebviewUri(
 				vscode.Uri.joinPath(context.extensionUri, 'media', fileName)
 			).toString();
@@ -175,7 +73,6 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
-	// Add file watcher
 	const fileWatcher = vscode.workspace.onDidSaveTextDocument(document => {
 		for (const [editor, entry] of panels.entries()) {
 			if (editor.document === document) {
@@ -185,7 +82,6 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
-	// Add editor close handler
 	const editorCloseListener = vscode.window.onDidChangeVisibleTextEditors(editors => {
 		for (const [editor] of panels) {
 			if (!editors.includes(editor)) {
@@ -194,293 +90,185 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
-	const exportCommand = vscode.commands.registerCommand('embeddedopenscad.exportSCAD', async () => {
-		const editor = vscode.window.activeTextEditor;
-		if (!editor) {
-			vscode.window.showInformationMessage('No active editor!');
-			return;
-		}
-
-		try {
-			const currentFile = editor.document.uri;
-			const exportPath = currentFile.with({ path: currentFile.path.replace(/\.scad$/, '.stl') });
-
-			const output = await renderSCAD(editor.document);
-			await vscode.workspace.fs.writeFile(exportPath, output);
-
-			vscode.window.showInformationMessage('STL file exported successfully!');
-		} catch (e) {
-			const errorMessage = e instanceof Error ? e.message : String(e);
-			vscode.window.showErrorMessage(`Export failed: ${errorMessage}`);
-			console.error("Export error:", e);
-		}
-	});
+	const exportCommand = vscode.commands.registerCommand('embeddedopenscad.exportSCAD', exportSCADToSTL);
 
 	context.subscriptions.push(disposable, fileWatcher, editorCloseListener, exportCommand);
+
+	printAbout().then(() => {
+		Logger.log('\nEmbedded OpenSCAD Extension Activated\n');
+	})
 }
 
-/**
- * Recursively loads library files from the specified directory into the WASM filesystem
- * @param scad The OpenSCAD instance
- * @param libraryPath The path to the directory containing library files
- * @param wasmDirPath The path in the WASM filesystem where to mount the library files
- */
-async function loadLibraryFiles(scad: any, libraryPath: string, wasmDirPath: string): Promise<void> {
-	// Use the log function if available
-	const log = (msg: string) => {
-		if (outputChannel?.appendLine) {
-			outputChannel?.appendLine(msg);
-		} else {
-			console.log(msg);
-		}
-	};
+export function deactivate() {
+	extensionContext = undefined;
+}
 
-	log(`Loading library files from ${libraryPath} to ${wasmDirPath}`);
+async function renderSCAD(document: vscode.TextDocument, preview: boolean = false) {
+	const scad = await createInstance();
 
-	// Create the necessary directory structure in WASM filesystem
-	try {
-		// Create each directory in the path
-		const pathParts = wasmDirPath.split('/').filter(Boolean);
-		let currentPath = '';
+	Logger.log(`Processing OpenSCAD file: ${document.fileName}`);
 
-		for (const part of pathParts) {
-			currentPath = currentPath ? `${currentPath}/${part}` : `/${part}`;
-			try {
-				scad.FS.mkdir(currentPath);
-				log(`Created WASM directory: ${currentPath}`);
-			} catch (e) {
-				// Directory may already exist
-				log(`Note: Directory ${currentPath} may already exist`);
-			}
-		}
-	} catch (e) {
-		log(`Error creating directory structure: ${e}`);
+	const inFile = 'input.scad';
+	const outFile = 'output.stl';
+
+	let text = document.getText();
+	if (preview) {
+		// Setting this with a command line arg doesn't appear to work
+		text = `$preview=true;${text}`;
+		Logger.log('Added $preview=true; to the code');
 	}
 
+	scad.FS.writeFile(inFile, text);
+
 	try {
-		// Check if the library path exists
-		const stats = fs.statSync(libraryPath);
-		if (!stats.isDirectory()) {
-			const errMsg = `User library path is not a directory: ${libraryPath}`;
-			log(`ERROR: ${errMsg}`);
-			throw new Error(errMsg);
+		const args = [inFile, "--enable=manifold", "--export-format=binstl", "-o", outFile];
+
+		Logger.log(`OpenSCAD ${args.join(' ')}`);
+
+		// Show the directory structure for debugging
+		// Logger.log('Checking WASM filesystem structure before execution:');
+		// listWASMDirectories(scad);
+
+		const exitCode = scad.callMain(args);
+		if (exitCode != 0) {
+			throw exitCode;
 		}
 
-		// Read directory contents
-		const entries = fs.readdirSync(libraryPath);
-		log(`Found ${entries.length} entries in ${libraryPath}`);
+		const output = scad.FS.readFile(`/${outFile}`);
+		Logger.log('OpenSCAD processing finished');
 
-		let scadFilesCount = 0;
+		const wasSuccess = !scad.getLastError?.();
 
-		for (const entry of entries) {
-			const fullPath = path.join(libraryPath, entry);
-			const wasmPath = path.join(wasmDirPath, entry);
+		return { output, wasSuccess };
+	} catch (e: unknown) {
+		// Get more detailed error information from our decoder
+		decodeAndRethrowErrorFromOpenSCAD(e, scad);
+	}
+}
 
+async function updatePreview(editor: vscode.TextEditor, entry: OpenFile) {
+	entry.panel.webview.postMessage({ loading: true });
+
+	try {
+		const { output } = await renderSCAD(editor.document, true);
+		const glb = await stl2glb(output);
+		const model = Buffer.from(glb).toString('base64');
+
+		entry.panel.webview.postMessage({
+			src: model,
+		});
+	} catch (e) {
+		if (!(e instanceof ErrorFromOpenSCAD)) {
+			Logger.error(e);
+		}
+		// TODO: Notify the user somehow that re-rendering their changes failed.
+	} finally {
+		entry.panel.webview.postMessage({ loading: false });
+	}
+}
+
+async function exportSCADToSTL(): Promise<void> {
+	const editor = vscode.window.activeTextEditor;
+	const currentFile = editor?.document.uri;
+	if (!editor || !currentFile || !currentFile.path.endsWith('.scad')) {
+		vscode.window.showWarningMessage('No .scad file open to export!');
+		return;
+	}
+
+	const fileName = path.basename(currentFile.fsPath);
+	const exportFileName = fileName.replace(/\.scad$/, '.stl');
+	const exportPath = currentFile.with({ path: currentFile.path.replace(/\.scad$/, '.stl') });
+
+	// Show immediate toast notification
+	vscode.window.withProgress(
+		{
+			location: vscode.ProgressLocation.Notification,
+			title: `Exporting ${fileName} to STL...`,
+			cancellable: false
+		},
+		async () => {
 			try {
-				const entryStats = fs.statSync(fullPath);
+				const { output, wasSuccess } = await renderSCAD(editor.document);
+				await vscode.workspace.fs.writeFile(exportPath, output);
 
-				if (entryStats.isDirectory()) {
-					// Recursively process subdirectories
-					log(`Processing subdirectory: ${entry}`);
-					await loadLibraryFiles(scad, fullPath, wasmPath);
-				} else {
-					// Check if it's a file we want to load (e.g., .scad files)
-					if (entry.endsWith('.scad')) {
-						log(`Loading SCAD file: ${entry}`);
-						const content = fs.readFileSync(fullPath);
-						try {
-							scad.FS.writeFile(wasmPath, content);
-							scadFilesCount++;
-							log(`Successfully wrote ${wasmPath} to WASM filesystem`);
-						} catch (e) {
-							const errMsg = `Failed to write file to WASM FS: ${wasmPath}`;
-							log(`ERROR: ${errMsg} - ${e}`);
-							console.error(errMsg, e);
-							// Continue with other files
+				if (wasSuccess) {
+					vscode.window.showInformationMessage(
+						`STL file exported successfully: ${exportFileName}`,
+						"Open File"
+					).then(selection => {
+						if (selection === "Open File") {
+							vscode.commands.executeCommand('vscode.open', exportPath);
 						}
-					} else {
-						log(`Skipping non-SCAD file: ${entry}`);
-					}
+					});
+				} else {
+					vscode.window.showInformationMessage(
+						`STL file exported with warnings: ${exportFileName}`,
+						"Open File",
+						"View Warnings"
+					).then(selection => {
+						if (selection === "Open File") {
+							vscode.commands.executeCommand('vscode.open', exportPath);
+						} else if (selection === "View Warnings") {
+							outputChannel.show();
+						}
+					});
 				}
 			} catch (e) {
-				log(`ERROR: Failed to process ${fullPath}: ${e}`);
-				// Continue with other entries
+				if (!(e instanceof ErrorFromOpenSCAD)) {
+					Logger.error(e);
+				}
+				errorToast(unknownToString(e));
 			}
 		}
-
-		log(`Successfully loaded ${scadFilesCount} SCAD files to ${wasmDirPath}`);
-	} catch (e) {
-		const errMsg = `Error loading library files from ${libraryPath}: ${e}`;
-		log(`ERROR: ${errMsg}`);
-		console.error(errMsg, e);
-		throw e;
-	}
+	);
 }
 
-function decodeOpenSCADError(error: unknown, scad: OpenSCAD.Instance): string {
-	// First try to use the built-in formatException if available
-	if (typeof error === "number") {
-		// if (scad.formatException) {
-		// 	try {
-		// 		const formattedError = scad.formatException(error);
-		// 		if (formattedError && typeof formattedError === "string" && formattedError !== String(error)) {
-		// 			return formattedError;
-		// 		}
-		// 	} catch (e) {
-		// 		// Continue trying to parse the error...
-		// 	}
-		// }
-
-		return decodeAbortString(scad, error);
-	}
-
-	// Generic error message if all else fails
-	return `Unknown OpenSCAD: ${error}.`;
+async function printAbout() {
+	try {
+		const instance = await createInstance(false);
+		instance.callMain(['--info']);
+	} catch (e) { }
 }
 
-function decodeAbortString(inst: OpenSCAD.Instance, ptr: number) {
-	if (!ptr) return '(null)';
-	ptr >>>= 0;                                 // force unsigned
+async function createInstance(loadData = true): Promise<OpenSCAD.Instance> {
+	Logger.log('\n');
 
-	const H8 = inst.HEAPU8;
-	const H32 = inst.HEAPU32;
-	const td = new TextDecoder('utf-8');
-
-	/* ---------- follow up to TWO indirections -------------------- */
-	for (let hop = 0; hop < 2; ++hop) {
-		if (ptr > 0 && ptr < H8.length) {
-			const p2 = H32[ptr >> 2] >>> 0;
-			if (p2 > 0 && p2 < H8.length && p2 !== ptr) {
-				ptr = p2;                     // one hop deeper
-				continue;
-			}
-		}
-		break;                            // not a valid hop → stop
-	}
-
-	/* ---------- scan to string boundaries ----------------------- */
-	let start = ptr;
-	while (start > 0 && H8[start - 1] !== 0) --start;
-
-	let end = ptr;
-	while (end < H8.length && H8[end] !== 0) ++end;
-
-	return td.decode(H8.subarray(start, end));
-}
-
-
-/**
- * Captures output from OpenSCAD WASM for debugging purposes
- * @returns A configured OpenSCAD instance that captures output
- */
-async function createOpenSCADWithLogging(): Promise<any> {
-	// Use the global output channel
-	outputChannel = outputChannel || vscode.window.createOutputChannel('OpenSCAD');
-
-	// Show the output channel now so it's visible when processing starts
-	outputChannel.clear();
-	outputChannel.show();
-	outputChannel.appendLine('=== OpenSCAD Processing Log ' + new Date().toISOString() + ' ===');
-
-	// Create a patched instance with logging
-	const scad: any = await patchInitWasm(() => OpenSCAD({
+	const scad = await patchInitWasm(() => OpenSCAD({
 		noInitialRun: true,
 	}));
 
-	scad.FS.mkdir(`/fonts`);
-	scad.FS.writeFile('/fonts/fonts.conf', `<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
-<fontconfig>
+	if (loadData) {
+		await Logger.timeAsync('Loaded fonts and library files in:', async () => {
+			// Load some default fonts (not configurable for now)
+			scad.FS.mkdir(`/fonts`);
+			const fontConfig = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extensionContext!.extensionUri, 'media', 'fonts.conf'));
+			scad.FS.writeFile('/fonts/fonts.conf', Buffer.from(fontConfig));
+			addFonts(scad);
 
-  <!-- 1 ▪ Scan this directory for fonts                               -->
-  <dir>/usr/share/fonts</dir>
+			// Load user library files if configured
+			const config = vscode.workspace.getConfiguration('embeddedopenscad');
+			const userLibraryPath = config.get<string>('userLibraryPath', '');
+			if (userLibraryPath) {
+				if (!fs.existsSync(userLibraryPath)) {
+					throw new Error(`User library path does not exist: ${userLibraryPath}`);
+				}
 
-  <!-- 2 ▪ Let Fontconfig write its cache here (RAM-backed in WASM)    -->
-  <cachedir>/tmp/fontcache</cachedir>
-
-  <!-- 3 ▪ Hard-wire the canonical aliases so nothing comes back NULL -->
-  <alias>
-    <family>sans-serif</family>
-    <prefer><family>Liberation Sans</family></prefer>
-  </alias>
-  <alias>
-    <family>serif</family>
-    <prefer><family>Liberation Serif</family></prefer>
-  </alias>
-  <alias>
-    <family>monospace</family>
-    <prefer><family>Liberation Mono</family></prefer>
-  </alias>
-
-</fontconfig>`)
-
-	addFonts(scad);
+				await loadLibraryFiles(scad, userLibraryPath, LIBRARIES_PATH);
+			}
+		});
+	}
 
 	return scad;
 }
 
 /**
- * Recursively lists the directory structure in the WASM filesystem for debugging
- * @param scad The OpenSCAD instance
- * @param dir The directory to list
- * @param depth Current recursion depth
+ * Shows an error message with a button that takes the user to the output pane
+ * @param message The error message to display
  */
-function listWasmDirectories(scad: any, dir: string = '/', depth: number = 0): void {
-	const log = (msg: string) => {
-		if (outputChannel?.appendLine) {
-			outputChannel?.appendLine(msg);
-		} else {
-			console.log(msg);
+function errorToast(message: string): void {
+	vscode.window.showErrorMessage(message, "View Output").then(selection => {
+		if (selection === "View Output") {
+			outputChannel.show();
 		}
-	};
-
-	// Prevent excessive recursion
-	if (depth > 9) {
-		return;
-	}
-
-	try {
-		// Check if directory exists
-		const indent = '  '.repeat(depth);
-		log(`${indent}Listing directory: ${dir}`);
-
-		try {
-			// List directory contents
-			const entries = scad.FS.readdir(dir);
-
-			// Filter out '.' and '..'
-			const filteredEntries = entries.filter((entry: string) => entry !== '.' && entry !== '..');
-
-			if (filteredEntries.length === 0) {
-				log(`${indent}(empty directory)`);
-				return;
-			}
-
-			// Log each entry
-			for (const entry of filteredEntries) {
-				const entryPath = `${dir}/${entry}`.replace(/\/+/g, '/');
-
-				try {
-					const stat = scad.FS.stat(entryPath);
-					const isDirectory = stat.mode & 16384; // 0040000 in octal, directory flag
-
-					if (isDirectory) {
-						log(`${indent}- [DIR] ${entry}`);
-						// Recursively list subdirectories
-						listWasmDirectories(scad, entryPath, depth + 1);
-					} else {
-						log(`${indent}- [FILE] ${entry}`);
-					}
-				} catch (e) {
-					log(`${indent}- [ERROR] Failed to stat ${entryPath}: ${e}`);
-				}
-			}
-		} catch (e) {
-			log(`${indent}Failed to read directory ${dir}: ${e}`);
-		}
-	} catch (e) {
-		log(`Error listing directory ${dir}: ${e}`);
-	}
+	});
 }
-
-export function deactivate() { }
