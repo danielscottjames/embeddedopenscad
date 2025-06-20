@@ -108,7 +108,8 @@ async function renderSCAD(document: vscode.TextDocument, preview: boolean = fals
 
 	Logger.log(`Processing OpenSCAD file: ${document.fileName}`);
 
-	const inFile = 'input.scad';
+	// Use the actual filename in the virtual filesystem
+	const inFile = path.basename(document.fileName);
 	const outFile = 'output.stl';
 
 	let text = document.getText();
