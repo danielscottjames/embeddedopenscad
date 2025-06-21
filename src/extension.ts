@@ -4,6 +4,7 @@ import { addFonts } from './wasm/openscad.fonts';
 import { unknownToString } from './util';
 import { decodeAndRethrowErrorFromOpenSCAD } from './error';
 import { loadLibraryFiles } from './loadLibraryFiles';
+import { loadFile } from './loadFile';
 import { Logger, setOutputChannel } from './logger';
 
 import OpenSCAD from "openscad-wasm";
@@ -111,10 +112,10 @@ export function deactivate() {
 async function renderSCAD(document: vscode.TextDocument, preview: boolean = false) {
 	const scad = await createInstance();
 
-	Logger.log(`Processing OpenSCAD file: ${document.fileName}`);
+	Logger.log(`Rendering ${document.fileName}`);
 
 	// Use the actual filename in the virtual filesystem
-	const inFile = path.basename(document.fileName);
+	const inFile = `/${path.basename(document.fileName)}`;
 	const outFile = 'output.stl';
 
 	let text = document.getText();
@@ -124,7 +125,14 @@ async function renderSCAD(document: vscode.TextDocument, preview: boolean = fals
 		Logger.log('Added $preview=true; to the code');
 	}
 
-	scad.FS.writeFile(inFile, text);
+	try {
+		const dependenciesLoaded = await loadFile(
+			scad,
+			document.fileName,
+			inFile,
+			text
+		);
+	} catch (e) { }
 
 	try {
 		const config = vscode.workspace.getConfiguration('embeddedopenscad');
